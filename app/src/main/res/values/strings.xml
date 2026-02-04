@@ -1,3 +1,48 @@
 <resources>
-    <string name="app_name">CherryDiskinfo</string>
+    <string name="app_name">Cherry Disk Info</string>
+    
+    <!-- 存储类型 -->
+    <string name="storage_type_emmc">eMMC</string>
+    <string name="storage_type_ufs">UFS</string>
+    <string name="storage_type_nvme">NVMe</string>
+    <string name="storage_type_unknown">未知</string>
+    
+    <string name="storage_type_emmc_desc">嵌入式多媒体卡</string>
+    <string name="storage_type_ufs_desc">通用闪存存储</string>
+    <string name="storage_type_nvme_desc">高速固态存储</string>
+    
+    <!-- 健康状态 -->
+    <string name="health_good">良好</string>
+    <string name="health_caution">警告</string>
+    <string name="health_bad">危险</string>
+    <string name="health_unknown">未知</string>
+    
+    <!-- 通用 -->
+    <string name="refresh">刷新</string>
+    <string name="loading">正在获取存储信息…</string>
+    <string name="error">获取失败</string>
+    <string name="available">可用</string>
+    <string name="unavailable">不可用</string>
+    <string name="unknown">未知</string>
+    
+    <!-- 设备信息标签 -->
+    <string name="label_device">设备</string>
+    <string name="label_model">型号</string>
+    <string name="label_firmware">固件版本</string>
+    <string name="label_serial">序列号</string>
+    <string name="label_capacity">总容量</string>
+    <string name="label_written">总写入量</string>
+    <string name="label_power_on">通电时间</string>
+    <string name="label_power_cycles">通电次数</string>
+    <string name="label_temperature">温度</string>
+    <string name="label_wear_level">磨损水平</string>
+    <string name="label_life_remaining">剩余寿命</string>
+    <string name="label_tbw">设计写入量(TBW)</string>
+    <string name="label_health">健康度</string>
+    
+    <!-- 数据源 -->
+    <string name="data_source_root">Root 权限</string>
+    <string name="data_source_adb">ADB 调试</string>
+    <string name="data_source_api">系统 API</string>
+    <string name="data_source_estimated">系统估算</string>
 </resources>
