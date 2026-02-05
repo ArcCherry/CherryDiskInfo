@@ -38,6 +38,7 @@ enum class HealthStatus {
  * @property powerCycleCount 通电次数
  * @property wearLevel 磨损水平（剩余PE周期百分比）
  * @property estimatedLifePercent 预估剩余寿命百分比
+ * @property detectionMethod 存储类型检测方法（用于诊断）
  */
 data class StorageInfo(
     val name: String = "Unknown",
@@ -49,12 +50,14 @@ data class StorageInfo(
     val availableBytes: Long = -1L,  // -1 表示未知
     val healthStatus: HealthStatus = HealthStatus.UNKNOWN,
     val healthPercentage: Int = -1,
+    val healthPercentageExact: Double = -1.0,  // 精确健康度（用于详细信息显示）
     val temperature: Int = -1,
     val totalBytesWritten: Long = 0L,
     val powerOnHours: Long = 0L,
     val powerCycleCount: Long = 0L,
     val wearLevel: Int = -1,
-    val estimatedLifePercent: Int = -1
+    val estimatedLifePercent: Int = -1,
+    val detectionMethod: String = ""
 ) {
     /**
      * 获取格式化后的容量字符串
