@@ -268,37 +268,244 @@ object NonRootStorageInfo {
             errors = errors
         )
     }
-    
+
+    /**
+     * 存储类型检测调试信息
+     */
+    data class StorageTypeDebugInfo(
+        val blockDevices: List<String>,
+        val mainDevice: String,
+        val ufsBusExists: Boolean,
+        val deviceVendor: String,
+        val deviceModel: String,
+        val deviceType: String,
+        val scsiInfo: String,
+        val lifeTime: String,
+        val detectedType: StorageType,
+        val detectionMethod: String
+    )
+
+    /**
+     * 收集存储类型检测的调试信息
+     */
+    fun getStorageTypeDebugInfo(): StorageTypeDebugInfo {
+        var detectionMethod = "unknown"
+
+        // 1. 列出 /sys/block 设备
+        val blockDevices = try {
+            File("/sys/block").listFiles()
+                ?.map { it.name }
+                ?.filter { !it.startsWith("loop") && !it.startsWith("ram") && !it.startsWith("dm-") }
+                ?: emptyList()
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        // 2. 确定主设备
+        val mainDevice = blockDevices.find {
+            it == "sda" || it == "mmcblk0" || it == "nvme0n1"
+        } ?: blockDevices.firstOrNull() ?: "unknown"
+
+        // 3. 检查 UFS 总线
+        val ufsBusExists = try {
+            File("/sys/bus/ufs").exists()
+        } catch (e: Exception) { false }
+
+        // 4. 读取设备信息
+        val deviceVendor = readFileOrExec("/sys/block/$mainDevice/device/vendor")
+        val deviceModel = readFileOrExec("/sys/block/$mainDevice/device/model")
+        val deviceType = readFileOrExec("/sys/block/$mainDevice/device/type")
+        val lifeTime = readFileOrExec("/sys/block/$mainDevice/device/life_time")
+
+        // 5. 读取 SCSI 信息
+        val scsiInfo = readFileOrExec("/proc/scsi/scsi").take(200)
+
+        // 6. 读取系统属性
+        val bootDeviceProp = getSystemProperty("ro.boot.bootdevice")
+        val bootDeviceLink = try {
+            File("/dev/block/bootdevice").canonicalPath
+        } catch (e: Exception) { "" }
+        val ufsTracingExists = try {
+            File("/sys/kernel/tracing/events/ufs").exists()
+        } catch (e: Exception) { false }
+
+        // 7. 检测存储类型（按优先级）
+        var detectedType = StorageType.UNKNOWN
+
+        when {
+            // 优先级1：设备名直接判断
+            mainDevice.startsWith("nvme") -> {
+                detectedType = StorageType.NVME
+                detectionMethod = "设备名 (nvme*)"
+            }
+            mainDevice.startsWith("mmcblk") -> {
+                detectedType = StorageType.EMMC
+                detectionMethod = "设备名 (mmcblk*)"
+            }
+            // 优先级2：ro.boot.bootdevice 属性
+            bootDeviceProp.contains("ufshc", ignoreCase = true) -> {
+                detectedType = StorageType.UFS
+                detectionMethod = "ro.boot.bootdevice ($bootDeviceProp)"
+            }
+            bootDeviceProp.contains("mmc", ignoreCase = true) -> {
+                detectedType = StorageType.EMMC
+                detectionMethod = "ro.boot.bootdevice ($bootDeviceProp)"
+            }
+            // 优先级3：/dev/block/bootdevice 符号链接
+            bootDeviceLink.contains("ufshc", ignoreCase = true) -> {
+                detectedType = StorageType.UFS
+                detectionMethod = "/dev/block/bootdevice -> ufshc"
+            }
+            bootDeviceLink.contains("mmc", ignoreCase = true) -> {
+                detectedType = StorageType.EMMC
+                detectionMethod = "/dev/block/bootdevice -> mmc"
+            }
+            // 优先级4：/sys/kernel/tracing/events/ufs
+            ufsTracingExists -> {
+                detectedType = StorageType.UFS
+                detectionMethod = "/sys/kernel/tracing/events/ufs exists"
+            }
+            // 优先级5：/sys/bus/ufs
+            ufsBusExists -> {
+                detectedType = StorageType.UFS
+                detectionMethod = "/sys/bus/ufs exists"
+            }
+            // 优先级6：sd* 设备但无法确认
+            mainDevice.startsWith("sd") -> {
+                detectedType = StorageType.UNKNOWN
+                detectionMethod = "sd* 设备，无法确认类型"
+            }
+            else -> {
+                detectedType = detectStorageType()
+                detectionMethod = "Build 属性推断"
+            }
+        }
+
+        return StorageTypeDebugInfo(
+            blockDevices = blockDevices,
+            mainDevice = mainDevice,
+            ufsBusExists = ufsBusExists,
+            deviceVendor = deviceVendor,
+            deviceModel = deviceModel,
+            deviceType = deviceType,
+            scsiInfo = scsiInfo,
+            lifeTime = lifeTime,
+            detectedType = detectedType,
+            detectionMethod = detectionMethod
+        )
+    }
+
+    /**
+     * 尝试读取文件，失败则尝试通过 shell 命令
+     */
+    private fun readFileOrExec(path: String): String {
+        // 先尝试直接读取
+        try {
+            val file = File(path)
+            if (file.exists() && file.canRead()) {
+                return file.readText().trim()
+            }
+        } catch (e: Exception) {
+            // ignore
+        }
+
+        // 尝试通过 shell 命令
+        return try {
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", "cat $path 2>/dev/null"))
+            val result = process.inputStream.bufferedReader().use { it.readText().trim() }
+            process.waitFor()
+            result.ifBlank { "(empty)" }
+        } catch (e: Exception) {
+            "(error: ${e.message})"
+        }
+    }
+
     /**
      * 通过 Build 属性和系统特征推断存储类型
      */
     fun detectStorageType(): StorageType {
-        // 方法1：检查硬件属性
+        // 方法1（最可靠）：检查 ro.boot.bootdevice 系统属性
+        try {
+            val bootDevice = getSystemProperty("ro.boot.bootdevice")
+            if (bootDevice.contains("ufshc", ignoreCase = true)) {
+                Log.d(TAG, "UFS detected via ro.boot.bootdevice: $bootDevice")
+                return StorageType.UFS
+            }
+            if (bootDevice.contains("mmc", ignoreCase = true) || bootDevice.contains("emmc", ignoreCase = true)) {
+                Log.d(TAG, "eMMC detected via ro.boot.bootdevice: $bootDevice")
+                return StorageType.EMMC
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read ro.boot.bootdevice: ${e.message}")
+        }
+
+        // 方法2：检查 /dev/block/bootdevice 符号链接
+        try {
+            val bootDeviceLink = File("/dev/block/bootdevice").canonicalPath
+            if (bootDeviceLink.contains("ufshc", ignoreCase = true)) {
+                Log.d(TAG, "UFS detected via /dev/block/bootdevice: $bootDeviceLink")
+                return StorageType.UFS
+            }
+            if (bootDeviceLink.contains("mmc", ignoreCase = true)) {
+                Log.d(TAG, "eMMC detected via /dev/block/bootdevice: $bootDeviceLink")
+                return StorageType.EMMC
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to read /dev/block/bootdevice: ${e.message}")
+        }
+
+        // 方法3：检查 /sys/kernel/tracing/events/ufs 目录
+        try {
+            val ufsTracingDir = File("/sys/kernel/tracing/events/ufs")
+            if (ufsTracingDir.exists() && ufsTracingDir.isDirectory) {
+                Log.d(TAG, "UFS detected via /sys/kernel/tracing/events/ufs")
+                return StorageType.UFS
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed to check /sys/kernel/tracing/events/ufs: ${e.message}")
+        }
+
+        // 方法4：检查硬件属性
         val hardware = Build.HARDWARE.lowercase()
         val board = Build.BOARD.lowercase()
         val device = Build.DEVICE.lowercase()
         val product = Build.PRODUCT.lowercase()
         val manufacturer = Build.MANUFACTURER.lowercase()
-        
+
         Log.d(TAG, "Hardware: $hardware, Board: $board, Device: $device, Mfg: $manufacturer")
-        
+
         // 小米设备特殊处理
         if (manufacturer.contains("xiaomi") || product.contains("mi")) {
-            // 小米 11 系列 (venus) 及以后通常用 UFS
             val miDevicesWithUFS = listOf("venus", "star", "mars", "cetus", "umi", "cmi", "cas")
             if (miDevicesWithUFS.any { device.contains(it) || product.contains(it) }) {
                 return StorageType.UFS
             }
         }
-        
-        // 某些设备会在这些字段中包含 ufs/emmc 信息
+
+        // 检查硬件字符串
         val checkString = "$hardware $board $device $product"
-        
+
         return when {
             checkString.contains("ufs") -> StorageType.UFS
             checkString.contains("emmc") || checkString.contains("mmc") -> StorageType.EMMC
             checkString.contains("nvme") -> StorageType.NVME
             else -> inferStorageTypeFromSoC()
+        }
+    }
+
+    /**
+     * 读取系统属性
+     */
+    private fun getSystemProperty(key: String): String {
+        return try {
+            val process = Runtime.getRuntime().exec(arrayOf("getprop", key))
+            val reader = BufferedReader(InputStreamReader(process.inputStream))
+            val result = reader.readLine() ?: ""
+            reader.close()
+            process.waitFor()
+            result.trim()
+        } catch (e: Exception) {
+            ""
         }
     }
     

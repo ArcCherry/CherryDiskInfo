@@ -11,12 +11,17 @@ import kotlinx.coroutines.withContext
  * 负责协调多个数据源，按优先级获取存储信息
  */
 class StorageRepository(private val context: Context? = null) {
-    
+
+    private val shizukuDataSource: ShizukuStorageDataSource? by lazy {
+        context?.let { ShizukuStorageDataSource(it) }
+    }
+
     private val dataSources by lazy {
-        listOf(
+        listOfNotNull(
             RootStorageDataSource(),              // 优先级最高，信息最全
+            shizukuDataSource,                    // Shizuku（ADB 级权限，无需电脑）
             SystemApiStorageDataSource(),         // Android 15+ 官方支持
-            AdbStorageDataSource(),               // ADB 调试模式
+            AdbStorageDataSource(),               // ADB 调试模式（需电脑连接）
             EstimatedStorageDataSource(context)   // 保底方案（非 Root）
         )
     }
@@ -53,18 +58,23 @@ class StorageRepository(private val context: Context? = null) {
         return listOf(
             DataSourceInfo(
                 type = DataSourceType.ROOT,
-                isAvailable = dataSources[0].isAvailable(),
+                isAvailable = dataSources.filterIsInstance<RootStorageDataSource>().firstOrNull()?.isAvailable() ?: false,
                 description = "需要 Root 权限，可获取完整 SMART 信息"
             ),
             DataSourceInfo(
+                type = DataSourceType.SHIZUKU,
+                isAvailable = shizukuDataSource?.isAvailable() ?: false,
+                description = "需安装 Shizuku，可获取 ADB 级信息"
+            ),
+            DataSourceInfo(
                 type = DataSourceType.SYSTEM_API,
-                isAvailable = dataSources[1].isAvailable(),
+                isAvailable = dataSources.filterIsInstance<SystemApiStorageDataSource>().firstOrNull()?.isAvailable() ?: false,
                 description = "Android 15+ 系统 API"
             ),
             DataSourceInfo(
                 type = DataSourceType.ADB,
-                isAvailable = dataSources[2].isAvailable(),
-                description = "需要 ADB 调试授权"
+                isAvailable = dataSources.filterIsInstance<AdbStorageDataSource>().firstOrNull()?.isAvailable() ?: false,
+                description = "需要 ADB 调试授权（需电脑连接）"
             ),
             DataSourceInfo(
                 type = DataSourceType.ESTIMATED,

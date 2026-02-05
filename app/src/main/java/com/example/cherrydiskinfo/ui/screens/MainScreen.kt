@@ -25,6 +25,7 @@ import com.example.cherrydiskinfo.ui.theme.*
 import com.example.cherrydiskinfo.util.NonRootStorageInfo
 import com.example.cherrydiskinfo.util.StringUtils
 import com.example.cherrydiskinfo.util.export.DiagnosticReportExporter
+import com.example.cherrydiskinfo.viewmodel.ShizukuStatus
 import com.example.cherrydiskinfo.viewmodel.StorageViewModel
 import com.example.cherrydiskinfo.viewmodel.StorageViewModelFactory
 import kotlinx.coroutines.launch
@@ -42,6 +43,7 @@ fun MainScreen(
     val storageInfo by viewModel.storageInfo.collectAsStateWithLifecycle()
     val rootStatus by viewModel.rootStatus.collectAsStateWithLifecycle()
     val dataSources by viewModel.dataSources.collectAsStateWithLifecycle()
+    val shizukuStatus by viewModel.shizukuStatus.collectAsStateWithLifecycle()
     var showMenu by remember { mutableStateOf(false) }
     var showDiagnostics by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
@@ -118,7 +120,18 @@ fun MainScreen(
         ) {
             // Root 状态提示
             RootStatusCard(rootStatus = rootStatus)
-            
+
+            // Shizuku 状态卡片
+            ShizukuStatusCard(
+                status = shizukuStatus,
+                onRequestPermission = { viewModel.requestShizukuPermission() },
+                onRefresh = {
+                    viewModel.checkShizukuStatus()
+                    viewModel.refreshDataSources()
+                    viewModel.loadStorageInfo()
+                }
+            )
+
             // 存储信息展示
             when (val result = storageInfo) {
                 is StorageInfoResult.Loading -> {
@@ -142,8 +155,10 @@ fun MainScreen(
     
     // 诊断信息对话框
     if (showDiagnostics) {
+        val currentStorageInfo = (storageInfo as? StorageInfoResult.Success)?.storageInfo
         DiagnosticsDialog(
             context = context,
+            storageInfo = currentStorageInfo,
             onDismiss = { showDiagnostics = false }
         )
     }
@@ -179,6 +194,7 @@ fun MainScreen(
 @Composable
 private fun DiagnosticsDialog(
     context: Context,
+    storageInfo: StorageInfo?,
     onDismiss: () -> Unit
 ) {
     var diagnosis by remember { mutableStateOf<NonRootStorageInfo.DiagnosisInfo?>(null) }
@@ -186,15 +202,17 @@ private fun DiagnosticsDialog(
     var fsStats by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     var dumpsysInfo by remember { mutableStateOf<NonRootStorageInfo.DumpsysDiskInfo?>(null) }
     var xiaomiInfo by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    
+    var storageTypeDebug by remember { mutableStateOf<NonRootStorageInfo.StorageTypeDebugInfo?>(null) }
+
     LaunchedEffect(Unit) {
         diagnosis = NonRootStorageInfo.diagnose(context)
         diskStats = NonRootStorageInfo.readDiskStats()
         fsStats = NonRootStorageInfo.readFsStats()
         dumpsysInfo = NonRootStorageInfo.getDumpsysDiskStats()
         xiaomiInfo = NonRootStorageInfo.getXiaomiStorageInfo()
+        storageTypeDebug = NonRootStorageInfo.getStorageTypeDebugInfo()
     }
-    
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("诊断信息") },
@@ -203,6 +221,34 @@ private fun DiagnosticsDialog(
                 modifier = Modifier.verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
+                // ========== 存储类型检测（最重要，放在最前面） ==========
+                Text("存储类型检测", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+
+                // 显示 Shizuku 检测结果（如果有）
+                storageInfo?.let { info ->
+                    Text(
+                        "当前检测结果: ${StringUtils.getStorageTypeName(info.type)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (info.type != StorageType.UNKNOWN) HealthGood else HealthCaution
+                    )
+                    if (info.detectionMethod.isNotBlank()) {
+                        info.detectionMethod.lines().forEach { line ->
+                            Text(line, style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+
+                // NonRoot 检测信息（作为补充）
+                storageTypeDebug?.let { debug ->
+                    if (storageInfo?.detectionMethod.isNullOrBlank()) {
+                        Text("主设备: ${debug.mainDevice.ifBlank { "未检测到" }}", style = MaterialTheme.typography.bodySmall)
+                        Text("检测结果: ${debug.detectedType}", style = MaterialTheme.typography.bodySmall)
+                        Text("检测方式: ${debug.detectionMethod}", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+
                 diagnosis?.let { diag ->
                     Text("系统访问能力", style = MaterialTheme.typography.titleSmall)
                     DiagnosticItem("/proc/diskstats 可读", diag.diskStatsReadable)
@@ -210,16 +256,16 @@ private fun DiagnosticsDialog(
                     DiagnosticItem("/proc/partitions 可读", diag.procPartitionsReadable)
                     DiagnosticItem("dumpsys 可用", diag.dumpsysAvailable)
                     DiagnosticItem("StorageManager 可用", diag.storageManagerAvailable)
-                    
+
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                    
+
                     Text("设备信息", style = MaterialTheme.typography.titleSmall)
                     diag.buildProps.forEach { (key, value) ->
                         Text("$key: $value", style = MaterialTheme.typography.bodySmall)
                     }
-                    
+
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                    
+
                     Text("磁盘统计 (${diskStats.size} 设备)", style = MaterialTheme.typography.titleSmall)
                     if (diskStats.isEmpty()) {
                         Text("无法读取 /proc/diskstats", style = MaterialTheme.typography.bodySmall, color = HealthBad)
@@ -231,9 +277,9 @@ private fun DiagnosticsDialog(
                             )
                         }
                     }
-                    
+
                     HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
-                    
+
                     Text("Dumpsys 信息", style = MaterialTheme.typography.titleSmall)
                     if (dumpsysInfo == null) {
                         Text("无法获取 dumpsys 信息", style = MaterialTheme.typography.bodySmall, color = HealthBad)
@@ -241,7 +287,7 @@ private fun DiagnosticsDialog(
                         Text("文件系统: ${dumpsysInfo?.fsType}", style = MaterialTheme.typography.bodySmall)
                         Text("总写入: ${dumpsysInfo?.totalWrites}", style = MaterialTheme.typography.bodySmall)
                     }
-                    
+
                     if (fsStats.isNotEmpty()) {
                         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                         Text("文件系统统计 (${fsStats.size} 项)", style = MaterialTheme.typography.titleSmall)
@@ -249,7 +295,7 @@ private fun DiagnosticsDialog(
                             Text("$path: ${value.take(30)}", style = MaterialTheme.typography.bodySmall)
                         }
                     }
-                    
+
                     if (xiaomiInfo.isNotEmpty()) {
                         HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
                         Text("小米特定信息", style = MaterialTheme.typography.titleSmall)
@@ -708,15 +754,19 @@ private fun InfoGrid(info: StorageInfo) {
             InfoRow("当前温度", StringUtils.formatTemperature(info.temperature))
         }
         
-        // 磨损水平
-        if (info.wearLevel >= 0) {
+        // 磨损水平（显示精确小数）
+        if (info.healthPercentageExact >= 0) {
+            InfoRow("磨损水平", String.format("%.2f%%", info.healthPercentageExact))
+        } else if (info.wearLevel >= 0) {
             InfoRow("磨损水平", "${info.wearLevel}%")
         } else {
             InfoRow("磨损水平", "需 Root 读取寿命计数器")
         }
-        
-        // 预估剩余寿命
-        if (info.estimatedLifePercent >= 0) {
+
+        // 预估剩余寿命（显示精确小数）
+        if (info.healthPercentageExact >= 0) {
+            InfoRow("预估剩余寿命", String.format("%.2f%%", info.healthPercentageExact))
+        } else if (info.estimatedLifePercent >= 0) {
             InfoRow("预估剩余寿命", "${info.estimatedLifePercent}%")
         } else {
             InfoRow("预估剩余寿命", "无法估算 (需写入统计)")
@@ -824,8 +874,9 @@ private fun DataSourceCard(dataSources: List<DataSourceInfo>) {
 private fun getDataSourceTypeName(type: DataSourceType): String {
     return when (type) {
         DataSourceType.ROOT -> "Root 权限"
-        DataSourceType.ADB -> "ADB 调试"
+        DataSourceType.SHIZUKU -> "Shizuku"
         DataSourceType.SYSTEM_API -> "系统 API (Android 15+)"
+        DataSourceType.ADB -> "ADB 调试"
         DataSourceType.ESTIMATED -> "系统估算"
     }
 }
@@ -834,7 +885,7 @@ private fun getDataSourceTypeName(type: DataSourceType): String {
 private fun StatusChip(isAvailable: Boolean) {
     val color = if (isAvailable) HealthGood else HealthUnknown
     val text = if (isAvailable) "可用" else "不可用"
-    
+
     Surface(
         color = color.copy(alpha = 0.2f),
         shape = MaterialTheme.shapes.small
@@ -847,3 +898,110 @@ private fun StatusChip(isAvailable: Boolean) {
         )
     }
 }
+
+@Composable
+private fun ShizukuStatusCard(
+    status: ShizukuStatus,
+    onRequestPermission: () -> Unit,
+    onRefresh: () -> Unit
+) {
+    val (icon, color, title, message, showButton) = when (status) {
+        ShizukuStatus.AVAILABLE -> Quintuple(
+            Icons.Default.Info,
+            HealthGood,
+            "Shizuku 已授权",
+            "可通过 Shizuku 获取更多存储信息",
+            false
+        )
+        ShizukuStatus.PERMISSION_DENIED -> Quintuple(
+            Icons.Default.Warning,
+            HealthCaution,
+            "Shizuku 未授权",
+            "点击授权按钮以获取更详细的存储信息",
+            true
+        )
+        ShizukuStatus.NOT_INSTALLED -> Quintuple(
+            Icons.Default.Info,
+            HealthUnknown,
+            "Shizuku 未运行",
+            "安装并启动 Shizuku 可获取更多存储信息（无需 Root）",
+            false
+        )
+        ShizukuStatus.CHECKING -> Quintuple(
+            Icons.Default.Info,
+            HealthUnknown,
+            "检查 Shizuku 状态...",
+            "请稍候",
+            false
+        )
+    }
+
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = color.copy(alpha = 0.1f)
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = color,
+                    modifier = Modifier.size(24.dp)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = color,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Medium
+                    )
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = color.copy(alpha = 0.8f)
+                    )
+                }
+            }
+
+            if (showButton) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    TextButton(onClick = onRefresh) {
+                        Text("刷新状态")
+                    }
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Button(
+                        onClick = onRequestPermission,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = color
+                        )
+                    ) {
+                        Text("授权 Shizuku")
+                    }
+                }
+            }
+        }
+    }
+}
+
+// 辅助类用于返回五个值
+private data class Quintuple<A, B, C, D, E>(
+    val first: A,
+    val second: B,
+    val third: C,
+    val fourth: D,
+    val fifth: E
+)

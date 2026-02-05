@@ -14,8 +14,9 @@ enum class RootStatus {
  */
 enum class DataSourceType {
     ROOT,           // 通过 Root 读取
-    ADB,            // 通过 ADB 读取
+    SHIZUKU,        // 通过 Shizuku 读取（ADB 级权限）
     SYSTEM_API,     // Android 15+ StorageHealthStats
+    ADB,            // 通过 ADB 读取（需电脑连接）
     ESTIMATED       // 估算值
 }
 
